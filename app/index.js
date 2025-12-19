@@ -1,23 +1,31 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, FlatList, Alert, Switch, Platform, TextInput, Vibration, AppState } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, FlatList, Alert, Switch, Platform, TextInput, Vibration, AppState, LogBox } from 'react-native';
 import MapView, { Circle, Marker } from 'react-native-maps';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Slider from '@react-native-community/slider';
+import { Audio } from 'expo-av';
+
+// --- IGNORE ANNOYING "KEEP AWAKE" ERROR ---
+LogBox.ignoreLogs(['Unable to activate keep awake']);
 
 // --- CONSTANTS ---
 const LOCATION_TASK_NAME = 'background-location-task';
 const STORAGE_KEY = '@gps_alarms';
-const CHANNEL_ID = 'alarm-channel-id'; 
+// CHANGED: New ID to force Android to reset sound settings for this channel
+const CHANNEL_ID = 'alarm-channel-v2'; 
+
+// --- GLOBAL SOUND OBJECT ---
+let soundObject = new Audio.Sound();
 
 // --- NOTIFICATION HANDLER ---
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowBanner: true,
     shouldShowList: true,
-    shouldPlaySound: true,
+    shouldPlaySound: true, // Allow system notification sound as backup
     shouldSetBadge: false,
   }),
 });
@@ -34,6 +42,39 @@ const getDistance = (lat1, lon1, lat2, lon2) => {
   return R * c; 
 };
 
+// --- AUDIO: PLAY LOOPING ALARM ---
+const playAlarmSound = async () => {
+  try {
+    // 1. Check if already playing
+    const status = await soundObject.getStatusAsync();
+    if (status.isLoaded && status.isPlaying) return; 
+
+    // 2. Unload previous to be safe
+    await soundObject.unloadAsync();
+    
+    // 3. Load and Play (Looping)
+    // MAKE SURE 'alarm.mp3' IS IN YOUR ASSETS FOLDER!
+    await soundObject.loadAsync(require('../assets/alarm.mp3')); 
+    await soundObject.setIsLoopingAsync(true);
+    await soundObject.playAsync();
+    
+  } catch (error) {
+    console.log("Sound Error - Did you add alarm.mp3 to assets?", error);
+  }
+};
+
+const stopAlarmSound = async () => {
+  try {
+    const status = await soundObject.getStatusAsync();
+    if (status.isLoaded) {
+        await soundObject.stopAsync();
+        await soundObject.unloadAsync();
+    }
+  } catch (e) {
+    console.log("Stop Sound Error", e);
+  }
+};
+
 // --- LOGIC: CHECK & TRIGGER ALARMS ---
 const checkAlarms = async (currentLoc) => {
   try {
@@ -43,7 +84,8 @@ const checkAlarms = async (currentLoc) => {
     const now = Date.now();
 
     const updatedAlarms = savedAlarms.map(alarm => {
-      if (!alarm.active || alarm.triggered) return alarm;
+      if (!alarm.active) return alarm; 
+      if (alarm.triggered) return alarm; 
       if (alarm.snoozedUntil && now < alarm.snoozedUntil) return alarm;
 
       const dist = getDistance(
@@ -52,25 +94,29 @@ const checkAlarms = async (currentLoc) => {
       );
 
       if (dist <= alarm.radius) {
-        // --- TRIGGER NOTIFICATION ---
+        // --- TRIGGER ALARM ---
+        // 1. Play Continuous Audio
+        playAlarmSound();
+
+        // 2. Show Notification
         Notifications.scheduleNotificationAsync({
           content: {
-            title: "🚨 WAKE UP! ARRIVAL ALERT!",
-            body: `You have reached ${alarm.name}`,
-            sound: 'default',
+            title: "🚨 ARRIVAL ALERT!",
+            body: `Arrived at ${alarm.name}. Tap to Silence.`,
             categoryIdentifier: 'alarm-actions',
             data: { alarmId: alarm.id },
             priority: Notifications.AndroidNotificationPriority.MAX, 
             channelId: CHANNEL_ID,
-            vibrate: [0, 1000, 500, 1000, 500, 1000],
             autoDismiss: false,
             sticky: true,
+            vibrate: [0, 500, 1000, 500, 1000, 500], // Vibration pattern
           },
           trigger: null,
         });
         
         alarmsUpdated = true;
-        return { ...alarm, triggered: true, active: false };
+        // Mark triggered but keep 'active' true so it stays ON in UI until stopped
+        return { ...alarm, triggered: true }; 
       }
       return alarm;
     });
@@ -79,19 +125,13 @@ const checkAlarms = async (currentLoc) => {
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updatedAlarms));
       return true; 
     }
-  } catch (e) {
-    // Silently fail to avoid crashing on rapid updates
-  }
+  } catch (e) { }
   return false;
 };
 
 // --- BACKGROUND TASK ---
 TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
-  if (error) {
-    // If background task fails (e.g. GPS off), usually we can't do much, 
-    // but we suppress the error to prevent crash.
-    return;
-  }
+  if (error) return;
   if (data) {
     const { locations } = data;
     await checkAlarms(locations[0].coords);
@@ -104,7 +144,8 @@ export default function App() {
   const [alarms, setAlarms] = useState([]);
   const [gpsEnabled, setGpsEnabled] = useState(true);
   
-  // Editing State
+  const hasShownGpsWarning = useRef(false);
+  
   const [isEditing, setIsEditing] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [tempName, setTempName] = useState("");
@@ -117,79 +158,123 @@ export default function App() {
 
   // --- INIT ---
   useEffect(() => {
+    // Enable Background Audio Mode
+    Audio.setAudioModeAsync({
+        staysActiveInBackground: true,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false,
+    });
+
     loadAlarms();
     requestPermissions();
     setupNotifications();
-    startGpsStatusCheck();
+    const gpsInterval = startGpsStatusCheck();
 
+    // NOTIFICATION LISTENER
     responseListener.current = Notifications.addNotificationResponseReceivedListener(response => {
       const actionId = response.actionIdentifier;
       const alarmId = response.notification.request.content.data.alarmId;
-      if (actionId === 'snooze') snoozeAlarm(alarmId);
-      if (actionId === 'stop') loadAlarms(); 
+      
+      // Stop the ringing immediately upon interaction
+      stopAlarmSound(); 
+
+      if (actionId === 'snooze') {
+        snoozeAlarm(alarmId);
+      } else if (actionId === 'stop') {
+        stopAlarmAndRefresh(alarmId);
+      } else {
+        // Tapped notification body -> Stop sound, open app
+        stopAlarmSound(); 
+      }
     });
 
     return () => {
       if (responseListener.current) responseListener.current.remove();
       if (locationWatcher.current) locationWatcher.current.remove();
+      clearInterval(gpsInterval);
     };
   }, []);
 
-  // --- GPS STATUS MONITOR ---
-  const startGpsStatusCheck = () => {
-    // Check periodically
-    const interval = setInterval(async () => {
-      try {
-        const enabled = await Location.hasServicesEnabledAsync();
+  // --- ALARM ACTIONS ---
+  const snoozeAlarm = async (id) => {
+    try {
+        const json = await AsyncStorage.getItem(STORAGE_KEY);
+        if (!json) return;
         
-        // If status changed from ON to OFF, notify user
-        if (gpsEnabled && !enabled) {
-           Notifications.scheduleNotificationAsync({
-            content: {
-              title: "⚠️ GPS Disabled",
-              body: "Alarms will not work until you turn location back on.",
-              priority: Notifications.AndroidNotificationPriority.HIGH,
-            },
-            trigger: null,
-          });
-        }
-        setGpsEnabled(enabled);
-      } catch (e) {
-        // Ignore service check errors
-      }
-    }, 3000);
-    return () => clearInterval(interval);
+        let currentList = JSON.parse(json);
+        const updated = currentList.map(a => a.id === id ? { ...a, triggered: false, active: true, snoozedUntil: Date.now() + 300000 } : a);
+        
+        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+        setAlarms(updated); 
+        stopAlarmSound();
+        Alert.alert("Snoozed", "Alarm paused for 5 minutes.");
+    } catch (e) { console.log(e); }
   };
 
-  // --- PERMISSIONS & SETUP ---
+  const stopAlarmAndRefresh = async (id) => {
+    try {
+        const json = await AsyncStorage.getItem(STORAGE_KEY);
+        if (!json) return;
+
+        let currentList = JSON.parse(json);
+        // Turn OFF the alarm completely
+        const updated = currentList.map(a => a.id === id ? { ...a, triggered: false, active: false } : a);
+
+        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+        setAlarms(updated);
+        stopAlarmSound();
+    } catch(e) { console.log(e); }
+  };
+
+  // --- BACKGROUND & GPS MANAGEMENT ---
+  const manageBackgroundService = async (shouldBeRunning) => {
+    try {
+      const hasStarted = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
+      if (shouldBeRunning && !hasStarted) {
+        await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
+          accuracy: Location.Accuracy.BestForNavigation,
+          timeInterval: 5000,
+          distanceInterval: 5,
+          showsBackgroundLocationIndicator: true,
+          foregroundService: { notificationTitle: "GPS Alarm Active", notificationBody: "Checking location..." }
+        });
+      } else if (!shouldBeRunning && hasStarted) {
+        await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
+      }
+    } catch (e) { }
+  };
+
+  const startGpsStatusCheck = () => {
+    return setInterval(async () => {
+      try {
+        const enabled = await Location.hasServicesEnabledAsync();
+        if (!enabled) {
+          await manageBackgroundService(false);
+          if (!hasShownGpsWarning.current) {
+             Notifications.scheduleNotificationAsync({
+              content: { title: "⚠️ GPS Disabled", body: "Alarms paused.", priority: Notifications.AndroidNotificationPriority.HIGH },
+              trigger: null,
+            });
+            hasShownGpsWarning.current = true;
+          }
+        } else {
+          await manageBackgroundService(true);
+          hasShownGpsWarning.current = false;
+        }
+        setGpsEnabled(enabled);
+      } catch (e) { }
+    }, 3000);
+  };
+
   const requestPermissions = async () => {
     try {
       const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
       if (fgStatus !== 'granted') return Alert.alert("Error", "Location permission required.");
-      
       const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
-      if (bgStatus !== 'granted') Alert.alert("Warning", "Background location disabled.");
-
       const { status: notifStatus } = await Notifications.requestPermissionsAsync();
-      if (notifStatus !== 'granted') Alert.alert("Error", "Notification permission required.");
+      
+      await manageBackgroundService(true);
 
-      // CRASH FIX: Wrap startLocationUpdatesAsync safely
-      try {
-        const hasStarted = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
-        if (!hasStarted) {
-          await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
-            accuracy: Location.Accuracy.BestForNavigation,
-            timeInterval: 5000,
-            distanceInterval: 5,
-            showsBackgroundLocationIndicator: true,
-            foregroundService: { notificationTitle: "GPS Alarm Active", notificationBody: "Checking location..." }
-          });
-        }
-      } catch (err) {
-        // Suppress "keep awake" error
-      }
-
-      // Foreground Watcher
       locationWatcher.current = await Location.watchPositionAsync(
         { accuracy: Location.Accuracy.High, timeInterval: 2000, distanceInterval: 5 },
         async (loc) => {
@@ -199,19 +284,17 @@ export default function App() {
           if (changed) loadAlarms();
         }
       );
-    } catch (e) {
-      console.log("Setup Error:", e);
-    }
+    } catch (e) {}
   };
 
   const setupNotifications = async () => {
     if (Platform.OS === 'android') {
       await Notifications.setNotificationChannelAsync(CHANNEL_ID, {
-        name: 'Alarm Channel',
+        name: 'Alarm Channel V2', // Changed name
         importance: Notifications.AndroidImportance.MAX,
-        vibrationPattern: [0, 1000, 500, 1000],
+        vibrationPattern: [0, 500, 200, 500],
         lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-        sound: 'default',
+        sound: 'default', // Fallback system sound
         enableVibrate: true,
       });
     }
@@ -228,7 +311,7 @@ export default function App() {
     } catch (e) {}
   };
 
-  // --- ACTIONS ---
+  // --- UI ACTIONS ---
   const recenterMap = () => {
     if (location && mapRef.current) {
       mapRef.current.animateToRegion({
@@ -290,12 +373,6 @@ export default function App() {
     setSelectedCoord(null);
   };
 
-  const snoozeAlarm = async (id) => {
-    const updated = alarms.map(a => a.id === id ? { ...a, triggered: false, active: true, snoozedUntil: Date.now() + 300000 } : a);
-    setAlarms(updated);
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-  };
-
   const deleteAlarm = async (id) => {
     const updated = alarms.filter(a => a.id !== id);
     setAlarms(updated);
@@ -328,7 +405,7 @@ export default function App() {
         <View style={{flex: 1}}>
           <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center'}}>
             <Text style={styles.cardTitle}>{item.name}</Text>
-            {item.triggered && <Text style={{color:'red', fontWeight:'bold'}}>ARRIVED!</Text>}
+            {item.triggered && <Text style={{color:'red', fontWeight:'bold'}}>RINGING!</Text>}
           </View>
           <Text style={styles.cardSub}>Radius: {item.radius.toFixed(0)}m • {item.active ? "Active" : "Off"}</Text>
           {item.active && !item.triggered && (
@@ -346,14 +423,10 @@ export default function App() {
 
   return (
     <View style={styles.container}>
-      {/* GPS OFF WARNING */}
       {!gpsEnabled && (
-        <View style={styles.warningBar}>
-          <Text style={styles.warningText}>⚠️ GPS is Disabled! Alarms won't work.</Text>
-        </View>
+        <View style={styles.warningBar}><Text style={styles.warningText}>⚠️ GPS is Disabled! Alarms won't work.</Text></View>
       )}
 
-      {/* HEADER STATS */}
       <View style={styles.statsHeader}>
         <View>
             <Text style={styles.statsLabel}>LAT: {location?.coords.latitude.toFixed(4) || "..."}</Text>
@@ -367,7 +440,6 @@ export default function App() {
         </View>
       </View>
 
-      {/* MAP VIEW */}
       <View style={styles.mapContainer}>
         <MapView
             ref={mapRef}
@@ -386,29 +458,17 @@ export default function App() {
                 <Circle center={alarm} radius={alarm.radius} fillColor={alarm.active ? "rgba(0, 255, 0, 0.1)" : "rgba(100,100,100,0.1)"} strokeColor={alarm.active ? "green" : "gray"} />
             </React.Fragment>
             ))}
-
             {selectedCoord && !isEditing && <Marker coordinate={selectedCoord} pinColor="blue" />}
-
             {isEditing && selectedCoord && (
                 <>
                     <Marker coordinate={selectedCoord} pinColor="orange" />
-                    <Circle 
-                        center={selectedCoord} 
-                        radius={tempRadius} 
-                        fillColor="rgba(255, 165, 0, 0.2)" 
-                        strokeColor="orange" 
-                        strokeWidth={2}
-                    />
+                    <Circle center={selectedCoord} radius={tempRadius} fillColor="rgba(255, 165, 0, 0.2)" strokeColor="orange" strokeWidth={2} />
                 </>
             )}
         </MapView>
-
-        <TouchableOpacity style={styles.fab} onPress={recenterMap}>
-            <Text style={{fontSize: 20}}>📍</Text>
-        </TouchableOpacity>
+        <TouchableOpacity style={styles.fab} onPress={recenterMap}><Text style={{fontSize: 20}}>📍</Text></TouchableOpacity>
       </View>
 
-      {/* BOTTOM PANEL */}
       <View style={styles.panel}>
         {isEditing ? (
             <View style={styles.editContainer}>
@@ -416,20 +476,11 @@ export default function App() {
                 <TextInput style={styles.input} value={tempName} onChangeText={setTempName} placeholder="Alarm Name" />
                 <View style={styles.sliderContainer}>
                     <Text style={styles.label}>Radius: {tempRadius.toFixed(0)} m</Text>
-                    <Slider 
-                        style={{width: '100%', height: 40}} 
-                        minimumValue={50} maximumValue={5000} step={50} 
-                        value={tempRadius} onValueChange={setTempRadius} 
-                        minimumTrackTintColor="#FF9500" thumbTintColor="#FF9500" 
-                    />
+                    <Slider style={{width: '100%', height: 40}} minimumValue={50} maximumValue={5000} step={50} value={tempRadius} onValueChange={setTempRadius} minimumTrackTintColor="#FF9500" thumbTintColor="#FF9500" />
                 </View>
                 <View style={styles.buttonRow}>
-                    <TouchableOpacity onPress={cancelEdit} style={[styles.actionBtn, {backgroundColor:'#ccc'}]}>
-                        <Text style={styles.btnText}>Cancel</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={saveAlarm} style={[styles.actionBtn, {backgroundColor:'#007AFF'}]}>
-                        <Text style={[styles.btnText, {color:'white'}]}>Save Alarm</Text>
-                    </TouchableOpacity>
+                    <TouchableOpacity onPress={cancelEdit} style={[styles.actionBtn, {backgroundColor:'#ccc'}]}><Text style={styles.btnText}>Cancel</Text></TouchableOpacity>
+                    <TouchableOpacity onPress={saveAlarm} style={[styles.actionBtn, {backgroundColor:'#007AFF'}]}><Text style={[styles.btnText, {color:'white'}]}>Save Alarm</Text></TouchableOpacity>
                 </View>
             </View>
         ) : (
@@ -437,19 +488,12 @@ export default function App() {
                 <View style={styles.listHeader}>
                     <Text style={styles.panelTitle}>Your Alarms</Text>
                     {selectedCoord ? (
-                        <TouchableOpacity style={styles.createBtn} onPress={startCreating}>
-                            <Text style={styles.createBtnText}>+ Set Alarm</Text>
-                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.createBtn} onPress={startCreating}><Text style={styles.createBtnText}>+ Set Alarm</Text></TouchableOpacity>
                     ) : (
                         <Text style={{color:'#888', fontSize:12}}>Tap map to create</Text>
                     )}
                 </View>
-                <FlatList 
-                    data={alarms} 
-                    keyExtractor={(item) => item.id} 
-                    renderItem={renderItem} 
-                    contentContainerStyle={{paddingBottom: 20}}
-                />
+                <FlatList data={alarms} keyExtractor={(item) => item.id} renderItem={renderItem} contentContainerStyle={{paddingBottom: 20}} />
             </>
         )}
       </View>
