@@ -405,6 +405,11 @@ export default function App() {
   };
 
   const saveAlarm = async () => {
+    Keyboard.dismiss();
+    // Reset keyboard state immediately
+    setKeyboardHeight(0);
+    setIsKeyboardVisible(false);
+    
     let newAlarmsList;
     if (editingId) {
       newAlarmsList = alarms.map(a => a.id === editingId ? { ...a, name: tempName, radius: tempRadius, active: true, triggered: false } : a);
@@ -433,6 +438,10 @@ export default function App() {
   };
 
   const cancelEdit = () => {
+    Keyboard.dismiss();
+    // Reset keyboard state immediately
+    setKeyboardHeight(0);
+    setIsKeyboardVisible(false);
     setIsEditing(false);
     setSelectedCoord(null);
   };
@@ -506,17 +515,13 @@ export default function App() {
   // Fixed panel height - same for both edit and list views
   const PANEL_HEIGHT = 320; // Fixed height for the panel
   
-  // Calculate bottom offset for panel - when keyboard is visible, position above keyboard
-  const panelBottomOffset = isKeyboardVisible && isEditing 
-    ? keyboardHeight 
-    : 0; // Stick to bottom when keyboard is hidden
-  
-  // Map container padding - no padding when keyboard is visible (panel is above keyboard)
-  // Full padding when keyboard is hidden (panel is at bottom)
-  const mapPaddingBottom = isKeyboardVisible && isEditing ? 0 : PANEL_HEIGHT;
+  // Calculate map container flex - shrink when keyboard is visible to make room for panel above keyboard
+  const mapContainerFlex = isKeyboardVisible && isEditing 
+    ? 0.5  // Smaller flex when keyboard is visible
+    : 1;   // Full flex when keyboard is hidden
 
-  return (
-    <View style={styles.container}>
+  const content = (
+    <>
       <StatusBar style="dark" />
       {!gpsEnabled && (
         <View style={styles.warningBar}><Text style={styles.warningText}>⚠️ GPS is Disabled! Alarms won't work.</Text></View>
@@ -535,7 +540,7 @@ export default function App() {
         </View>
       </View>
 
-      <View style={[styles.mapContainer, { paddingBottom: mapPaddingBottom }]}>
+      <View style={[styles.mapContainer, { flex: mapContainerFlex }]}>
         <MapView
             ref={mapRef}
             style={styles.map}
@@ -579,8 +584,7 @@ export default function App() {
       <View style={[
         styles.panel,
         { 
-          height: PANEL_HEIGHT,
-          bottom: panelBottomOffset 
+          height: PANEL_HEIGHT
         }
       ]}>
         {isEditing ? (
@@ -628,7 +632,23 @@ export default function App() {
             </>
         )}
       </View>
-    </View>
+    </>
+  );
+
+  return (
+    isEditing ? (
+      <KeyboardAvoidingView 
+        style={styles.container}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={0}
+      >
+        {content}
+      </KeyboardAvoidingView>
+    ) : (
+      <View style={styles.container}>
+        {content}
+      </View>
+    )
   );
 }
 
@@ -643,9 +663,6 @@ const styles = StyleSheet.create({
   map: { width: '100%', height: '100%' },
   fab: { position: 'absolute', bottom: 20, right: 20, backgroundColor: 'white', width: 50, height: 50, borderRadius: 25, justifyContent: 'center', alignItems: 'center', elevation: 5, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 3, shadowOffset: {width:0, height:2} },
   panel: { 
-    position: 'absolute', 
-    left: 0, 
-    right: 0, 
     backgroundColor: 'white', 
     borderTopLeftRadius: 20, 
     borderTopRightRadius: 20, 
@@ -654,7 +671,7 @@ const styles = StyleSheet.create({
     shadowOpacity:0.1, 
     shadowRadius:10, 
     elevation:10,
-    zIndex: 15
+    width: '100%'
   },
   panelTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 10 },
   listHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
@@ -669,11 +686,11 @@ const styles = StyleSheet.create({
   liveContainer: { marginTop: 8, backgroundColor: '#E3F2FD', padding: 4, borderRadius: 4, alignSelf: 'flex-start' },
   liveText: { color: '#007AFF', fontSize: 11, fontWeight: 'bold' },
   editScrollView: { flex: 1 },
-  editContainer: { flexGrow: 1, justifyContent: 'flex-start', paddingBottom: 10 },
+  editContainer: { flexGrow: 1, justifyContent: 'flex-start', paddingBottom: 0 },
   input: { borderWidth: 1, borderColor: '#ddd', borderRadius: 8, padding: 12, fontSize: 16, backgroundColor: '#F9F9F9', marginBottom: 15 },
   sliderContainer: { marginBottom: 15 },
   label: { fontSize: 14, fontWeight: 'bold', marginBottom: 5, color:'#555' },
-  buttonRow: { flexDirection: 'row', gap: 10, marginTop: 10 },
-  actionBtn: { flex: 1, padding: 15, borderRadius: 10, alignItems: 'center' },
+  buttonRow: { flexDirection: 'row', gap: 10, marginTop: 0, marginBottom: 0 },
+  actionBtn: { flex: 1, paddingVertical: 10, paddingHorizontal: 15, borderRadius: 10, alignItems: 'center' },
   btnText: { fontWeight: 'bold' }
 });
