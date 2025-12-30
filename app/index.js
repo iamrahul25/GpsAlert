@@ -545,11 +545,13 @@ export default function App() {
       return alarms;
     }
     
-    // Sort by distance from current position (least to most)
+    // Sort by distance to boundary (edge) from current position (least to most)
     return [...alarms].sort((a, b) => {
-      const distA = getDistance(location.coords.latitude, location.coords.longitude, a.latitude, a.longitude);
-      const distB = getDistance(location.coords.latitude, location.coords.longitude, b.latitude, b.longitude);
-      return distA - distB;
+      const distToCenterA = getDistance(location.coords.latitude, location.coords.longitude, a.latitude, a.longitude);
+      const distToCenterB = getDistance(location.coords.latitude, location.coords.longitude, b.latitude, b.longitude);
+      const distToEdgeA = Math.max(0, distToCenterA - a.radius);
+      const distToEdgeB = Math.max(0, distToCenterB - b.radius);
+      return distToEdgeA - distToEdgeB;
     });
   };
 
