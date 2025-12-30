@@ -623,8 +623,8 @@ export default function App() {
 
       <View style={styles.statsHeader}>
         <View>
-            <Text style={styles.statsLabel}>LAT: {location?.coords.latitude.toFixed(4) || "..."}</Text>
-            <Text style={styles.statsLabel}>LNG: {location?.coords.longitude.toFixed(4) || "..."}</Text>
+            <Text style={styles.statsLabel}>LAT: {location?.coords.latitude.toFixed(7) || "..."}</Text>
+            <Text style={styles.statsLabel}>LNG: {location?.coords.longitude.toFixed(7) || "..."}</Text>
         </View>
         <View>
             <Text style={styles.statsLabel}>GPS Accuracy</Text>
