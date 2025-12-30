@@ -1,12 +1,14 @@
 {
   "expo": {
-    "name": "GpsAlert",
+    "name": "GPS Alarm",
     "slug": "gpsalert",
     "version": "1.0.0",
     "orientation": "portrait",
     "scheme": "myapp",
     "userInterfaceStyle": "automatic",
+    "icon": "./assets/icon.png",
     "splash": {
+      "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
@@ -14,6 +16,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.yourname.gpsalert",
+      "icon": "./assets/icon.png",
       "infoPlist": {
         "UIBackgroundModes": [
           "location",
@@ -24,8 +27,10 @@
     },
     "android": {
       "package": "com.yourname.gpsalert",
+      "icon": "./assets/icon.png",
       "adaptiveIcon": {
-        "backgroundColor": "#ffffff"
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1a1a1a"
       },
       "permissions": [
         "ACCESS_COARSE_LOCATION",
