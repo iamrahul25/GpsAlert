@@ -177,6 +177,7 @@ export default function App() {
   const [tempName, setTempName] = useState("");
   const [tempRadius, setTempRadius] = useState(500);
   const [selectedCoord, setSelectedCoord] = useState(null);
+  const [selectedLocationName, setSelectedLocationName] = useState(null);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const [mapRegion, setMapRegion] = useState(null);
@@ -379,20 +380,76 @@ export default function App() {
     } catch (e) {}
   };
 
+  // --- REVERSE GEOCODING: Get location name from coordinates ---
+  const getLocationName = async (latitude, longitude) => {
+    try {
+      const reverseGeocode = await Location.reverseGeocodeAsync({
+        latitude,
+        longitude,
+      });
+      
+      if (reverseGeocode && reverseGeocode.length > 0) {
+        const address = reverseGeocode[0];
+        const parts = [];
+        
+        // Add place name (name, street, or subThoroughfare)
+        if (address.name) {
+          parts.push(address.name);
+        } else if (address.street) {
+          parts.push(address.street);
+        } else if (address.subThoroughfare) {
+          parts.push(address.subThoroughfare);
+        }
+        
+        // Add city
+        if (address.city) {
+          parts.push(address.city);
+        } else if (address.subAdministrativeArea) {
+          parts.push(address.subAdministrativeArea);
+        }
+        
+        // Add state
+        if (address.region) {
+          parts.push(address.region);
+        } else if (address.administrativeArea) {
+          parts.push(address.administrativeArea);
+        }
+        
+        // Add postal code (pin)
+        if (address.postalCode) {
+          parts.push(address.postalCode);
+        }
+        
+        // Format as "Place name, city, state, pin"
+        return parts.join(', ');
+      }
+      
+      return null;
+    } catch (error) {
+      console.log("Reverse geocoding error:", error);
+      return null;
+    }
+  };
+
   // --- UI ACTIONS ---
   const startCreating = () => {
     if (!selectedCoord) return Alert.alert("Tap Map", "Please tap a destination on the map first.");
     setEditingId(null);
-    setTempName(`Alarm #${alarms.length + 1}`);
+    // Use location name if available, otherwise fallback to default
+    setTempName(selectedLocationName || `Alarm #${alarms.length + 1}`);
     setTempRadius(500);
     setIsEditing(true);
   };
 
-  const startEditing = (alarm) => {
+  const startEditing = async (alarm) => {
     setEditingId(alarm.id);
     setTempName(alarm.name);
     setTempRadius(alarm.radius);
-    setSelectedCoord({ latitude: alarm.latitude, longitude: alarm.longitude });
+    const coord = { latitude: alarm.latitude, longitude: alarm.longitude };
+    setSelectedCoord(coord);
+    // Get location name for the alarm location
+    const locationName = await getLocationName(coord.latitude, coord.longitude);
+    setSelectedLocationName(locationName);
     setIsEditing(true);
   };
 
@@ -422,6 +479,7 @@ export default function App() {
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(newAlarmsList));
     setIsEditing(false);
     setSelectedCoord(null);
+    setSelectedLocationName(null);
 
     if (location) {
       const changed = await checkAlarms(location.coords);
@@ -436,6 +494,7 @@ export default function App() {
     setIsKeyboardVisible(false);
     setIsEditing(false);
     setSelectedCoord(null);
+    setSelectedLocationName(null);
   };
 
   const deleteAlarm = async (id) => {
@@ -486,10 +545,8 @@ export default function App() {
     return (
       <View style={[styles.card, (!item.active || item.triggered) && styles.cardInactive]}>
         <View style={{flex: 1}}>
-          <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center'}}>
-            <Text style={styles.cardTitle}>{item.name}</Text>
-            {item.triggered && <Text style={{color:'red', fontWeight:'bold'}}>RINGING!</Text>}
-          </View>
+          <Text style={styles.cardTitle}>{item.name}</Text>
+          {item.triggered && <Text style={{color:'red', fontWeight:'bold', marginTop: 4}}>RINGING!</Text>}
           <Text style={styles.cardSub}>Radius: {item.radius.toFixed(0)}m • {item.active ? "Active" : "Off"}</Text>
           {item.active && !item.triggered && (
             <View style={styles.liveContainer}><Text style={styles.liveText}>📍 {distDisplay} to boundary</Text></View>
@@ -538,7 +595,15 @@ export default function App() {
             style={styles.map}
             showsUserLocation={true}
             showsMyLocationButton={true}
-            onPress={(e) => !isEditing && setSelectedCoord(e.nativeEvent.coordinate)}
+            onPress={async (e) => {
+              if (!isEditing) {
+                const coord = e.nativeEvent.coordinate;
+                setSelectedCoord(coord);
+                // Get location name when pin is dropped
+                const locationName = await getLocationName(coord.latitude, coord.longitude);
+                setSelectedLocationName(locationName);
+              }
+            }}
             region={mapRegion || {
               latitude: location ? location.coords.latitude : 28.6139,
               longitude: location ? location.coords.longitude : 77.2090,
