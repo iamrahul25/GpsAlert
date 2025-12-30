@@ -9,7 +9,11 @@ import Slider from '@react-native-community/slider';
 import { Audio } from 'expo-av';
 
 // --- IGNORE ANNOYING "KEEP AWAKE" ERROR ---
-LogBox.ignoreLogs(['Unable to activate keep awake']);
+LogBox.ignoreLogs([
+  'Unable to activate keep awake',
+  /Unable to activate keep awake/,
+  'Error: Unable to activate keep awake'
+]);
 
 // --- CONSTANTS ---
 const LOCATION_TASK_NAME = 'background-location-task';
@@ -22,12 +26,16 @@ let soundObject = new Audio.Sound();
 
 // --- NOTIFICATION HANDLER ---
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: true, // Allow system notification sound as backup
-    shouldSetBadge: false,
-  }),
+  handleNotification: async (notification) => {
+    // Suppress sound for refresh notifications (isRefresh flag in data)
+    const isRefresh = notification.request.content.data?.isRefresh === true;
+    return {
+      shouldShowBanner: true,
+      shouldShowList: true,
+      shouldPlaySound: !isRefresh, // Don't play sound on refresh notifications
+      shouldSetBadge: false,
+    };
+  },
 });
 
 // --- HELPER: Haversine Distance ---
@@ -71,8 +79,39 @@ const stopAlarmSound = async () => {
         await soundObject.unloadAsync();
     }
   } catch (e) {
-    console.log("Stop Sound Error", e);
+    // Sound is not loaded, already unloaded, or in invalid state - this is fine, just ignore
+    // Suppress common expected errors
+    const errorMsg = e?.message || String(e) || '';
+    if (!errorMsg.includes('not loaded') && 
+        !errorMsg.includes('Cannot complete operation') &&
+        !errorMsg.includes('Sound is not loaded')) {
+      // Only log unexpected errors
+      console.log("Stop Sound Error", e);
+    }
   }
+};
+
+// --- HELPER: Show persistent alarm notification ---
+const showAlarmNotification = async (alarm, silent = false) => {
+  // Use scheduleNotificationAsync with trigger: null to show immediately
+  await Notifications.scheduleNotificationAsync({
+    identifier: `alarm-${alarm.id}`, // Unique ID per alarm
+    content: {
+      title: "🚨 ARRIVAL ALERT!",
+      body: `Arrived at ${alarm.name}. Tap "Stop Alarm" to dismiss.`,
+      categoryIdentifier: 'alarm-actions',
+      data: { alarmId: alarm.id, isRefresh: silent }, // Track if this is a refresh
+      priority: Notifications.AndroidNotificationPriority.MAX, 
+      channelId: CHANNEL_ID,
+      autoDismiss: false,
+      sticky: true,
+      // Only add sound/vibration on initial notification, not on refresh
+      ...(silent ? {} : {
+        vibrate: [0, 500, 1000, 500, 1000, 500], // Vibration pattern
+      }),
+    },
+    trigger: null, // null trigger shows notification immediately
+  });
 };
 
 // --- LOGIC: CHECK & TRIGGER ALARMS ---
@@ -97,21 +136,8 @@ const checkAlarms = async (currentLoc) => {
         // 1. Play Continuous Audio
         playAlarmSound();
 
-        // 2. Show Notification
-        Notifications.scheduleNotificationAsync({
-          content: {
-            title: "🚨 ARRIVAL ALERT!",
-            body: `Arrived at ${alarm.name}. Tap to Silence.`,
-            categoryIdentifier: 'alarm-actions',
-            data: { alarmId: alarm.id },
-            priority: Notifications.AndroidNotificationPriority.MAX, 
-            channelId: CHANNEL_ID,
-            autoDismiss: false,
-            sticky: true,
-            vibrate: [0, 500, 1000, 500, 1000, 500], // Vibration pattern
-          },
-          trigger: null,
-        });
+        // 2. Show Notification (with unique ID per alarm to prevent replacement)
+        showAlarmNotification(alarm);
         
         alarmsUpdated = true;
         // Mark triggered but keep 'active' true so it stays ON in UI until stopped
@@ -154,6 +180,7 @@ export default function App() {
   const mapRef = useRef(null);
   const responseListener = useRef();
   const locationWatcher = useRef(null);
+  const hasCenteredOnLoad = useRef(false);
 
   // --- INIT ---
   useEffect(() => {
@@ -179,18 +206,57 @@ export default function App() {
 
       if (actionId === 'stop') {
         stopAlarmAndRefresh(alarmId);
-      } else {
-        // Tapped notification body -> Stop sound, open app
-        stopAlarmSound(); 
       }
+      // If tapped notification body, sound is already stopped above
     });
+
+    // Re-show notifications for active triggered alarms (prevents dismissal)
+    // This makes notifications effectively non-dismissible until "Stop Alarm" is clicked
+    // Using silent=true to prevent notification sound from playing on refresh
+    const notificationRefreshInterval = setInterval(async () => {
+      try {
+        const json = await AsyncStorage.getItem(STORAGE_KEY);
+        if (!json) return;
+        const savedAlarms = JSON.parse(json);
+        const triggeredAlarms = savedAlarms.filter(a => a.active && a.triggered);
+        
+        // Re-show notification silently for each active triggered alarm
+        // Using same identifier will update existing notification or recreate if dismissed
+        // silent=true prevents sound/vibration from playing on refresh
+        for (const alarm of triggeredAlarms) {
+          await showAlarmNotification(alarm, true); // true = silent refresh
+        }
+      } catch (e) {
+        // Silently handle errors
+      }
+    }, 5000); // Check every 5 seconds (reduced frequency to minimize interruptions)
 
     return () => {
       if (responseListener.current) responseListener.current.remove();
       if (locationWatcher.current) locationWatcher.current.remove();
       clearInterval(gpsInterval);
+      clearInterval(notificationRefreshInterval);
     };
   }, []);
+
+  // Center map to current location when location becomes available and map is ready
+  useEffect(() => {
+    if (location && mapRef.current && !hasCenteredOnLoad.current) {
+      // Small delay to ensure map is fully rendered
+      const timer = setTimeout(() => {
+        if (mapRef.current) {
+          hasCenteredOnLoad.current = true;
+          mapRef.current.animateToRegion({
+            latitude: location.coords.latitude,
+            longitude: location.coords.longitude,
+            latitudeDelta: 0.05,
+            longitudeDelta: 0.05,
+          }, 500);
+        }
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [location]);
 
   // --- ALARM ACTIONS ---
   const stopAlarmAndRefresh = async (id) => {
@@ -205,6 +271,9 @@ export default function App() {
         await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
         setAlarms(updated);
         stopAlarmSound();
+        
+        // Dismiss the notification when alarm is stopped
+        await Notifications.dismissNotificationAsync(`alarm-${id}`);
     } catch(e) { console.log(e); }
   };
 
@@ -415,6 +484,18 @@ export default function App() {
             style={styles.map}
             showsUserLocation={true}
             showsMyLocationButton={true}
+            onMapReady={() => {
+              // When map is fully loaded and we have location, center to current location
+              if (location && !hasCenteredOnLoad.current && mapRef.current) {
+                hasCenteredOnLoad.current = true;
+                mapRef.current.animateToRegion({
+                  latitude: location.coords.latitude,
+                  longitude: location.coords.longitude,
+                  latitudeDelta: 0.05,
+                  longitudeDelta: 0.05,
+                }, 500); // 500ms animation
+              }
+            }}
             onPress={(e) => !isEditing && setSelectedCoord(e.nativeEvent.coordinate)}
             initialRegion={{
             latitude: location ? location.coords.latitude : 28.6139,
