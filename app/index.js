@@ -550,7 +550,7 @@ export default function App() {
               setMapRegion(region);
             }}
         >
-            {!isEditing && alarms.map((alarm) => (
+            {alarms.map((alarm) => (
             <React.Fragment key={alarm.id}>
                 <Marker coordinate={alarm} pinColor={alarm.active ? "green" : "gray"} />
                 <Circle center={alarm} radius={alarm.radius} fillColor={alarm.active ? "rgba(0, 255, 0, 0.1)" : "rgba(100,100,100,0.1)"} strokeColor={alarm.active ? "green" : "gray"} />
