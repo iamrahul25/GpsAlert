@@ -86,7 +86,6 @@ const checkAlarms = async (currentLoc) => {
     const updatedAlarms = savedAlarms.map(alarm => {
       if (!alarm.active) return alarm; 
       if (alarm.triggered) return alarm; 
-      if (alarm.snoozedUntil && now < alarm.snoozedUntil) return alarm;
 
       const dist = getDistance(
         currentLoc.latitude, currentLoc.longitude,
@@ -178,9 +177,7 @@ export default function App() {
       // Stop the ringing immediately upon interaction
       stopAlarmSound(); 
 
-      if (actionId === 'snooze') {
-        snoozeAlarm(alarmId);
-      } else if (actionId === 'stop') {
+      if (actionId === 'stop') {
         stopAlarmAndRefresh(alarmId);
       } else {
         // Tapped notification body -> Stop sound, open app
@@ -196,21 +193,6 @@ export default function App() {
   }, []);
 
   // --- ALARM ACTIONS ---
-  const snoozeAlarm = async (id) => {
-    try {
-        const json = await AsyncStorage.getItem(STORAGE_KEY);
-        if (!json) return;
-        
-        let currentList = JSON.parse(json);
-        const updated = currentList.map(a => a.id === id ? { ...a, triggered: false, active: true, snoozedUntil: Date.now() + 300000 } : a);
-        
-        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-        setAlarms(updated); 
-        stopAlarmSound();
-        Alert.alert("Snoozed", "Alarm paused for 5 minutes.");
-    } catch (e) { console.log(e); }
-  };
-
   const stopAlarmAndRefresh = async (id) => {
     try {
         const json = await AsyncStorage.getItem(STORAGE_KEY);
@@ -299,7 +281,6 @@ export default function App() {
       });
     }
     await Notifications.setNotificationCategoryAsync('alarm-actions', [
-      { identifier: 'snooze', buttonTitle: '💤 Snooze 5m', options: { opensAppToForeground: false } },
       { identifier: 'stop', buttonTitle: '✅ Stop Alarm', options: { isDestructive: true, opensAppToForeground: true } },
     ]);
   };
@@ -312,17 +293,6 @@ export default function App() {
   };
 
   // --- UI ACTIONS ---
-  const recenterMap = () => {
-    if (location && mapRef.current) {
-      mapRef.current.animateToRegion({
-        latitude: location.coords.latitude,
-        longitude: location.coords.longitude,
-        latitudeDelta: 0.05,
-        longitudeDelta: 0.05,
-      });
-    }
-  };
-
   const startCreating = () => {
     if (!selectedCoord) return Alert.alert("Tap Map", "Please tap a destination on the map first.");
     setEditingId(null);
@@ -351,8 +321,7 @@ export default function App() {
         longitude: selectedCoord.longitude,
         radius: tempRadius,
         active: true,
-        triggered: false,
-        snoozedUntil: 0
+        triggered: false
       };
       newAlarmsList = [...alarms, newAlarm];
     }
@@ -445,6 +414,7 @@ export default function App() {
             ref={mapRef}
             style={styles.map}
             showsUserLocation={true}
+            showsMyLocationButton={true}
             onPress={(e) => !isEditing && setSelectedCoord(e.nativeEvent.coordinate)}
             initialRegion={{
             latitude: location ? location.coords.latitude : 28.6139,
@@ -466,7 +436,6 @@ export default function App() {
                 </>
             )}
         </MapView>
-        <TouchableOpacity style={styles.fab} onPress={recenterMap}><Text style={{fontSize: 20}}>📍</Text></TouchableOpacity>
       </View>
 
       <View style={styles.panel}>
