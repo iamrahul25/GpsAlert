@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, FlatList, Alert, Switch, Platform, TextInput, Vibration, AppState, LogBox } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
 import MapView, { Circle, Marker } from 'react-native-maps';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
@@ -479,6 +480,7 @@ export default function App() {
 
   return (
     <View style={styles.container}>
+      <StatusBar style="dark" />
       {!gpsEnabled && (
         <View style={styles.warningBar}><Text style={styles.warningText}>⚠️ GPS is Disabled! Alarms won't work.</Text></View>
       )}
@@ -571,9 +573,9 @@ export default function App() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F2F2F7' },
-  warningBar: { backgroundColor: '#FF3B30', padding: 10, paddingTop: 40, alignItems: 'center', zIndex: 20 },
+  warningBar: { backgroundColor: '#FF3B30', padding: 10, paddingTop: 50, alignItems: 'center', zIndex: 20 },
   warningText: { color: 'white', fontWeight: 'bold' },
-  statsHeader: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 15, paddingTop: 10, paddingBottom: 10, backgroundColor: 'white', borderBottomWidth:1, borderBottomColor:'#ddd', zIndex: 10 },
+  statsHeader: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 15, paddingTop: 40, paddingBottom: 3, backgroundColor: 'white', borderBottomWidth:1, borderBottomColor:'#ddd', zIndex: 10 },
   statsLabel: { fontSize: 10, color: '#666', fontWeight:'bold' },
   statsValue: { fontSize: 14, fontWeight: 'bold' },
   mapContainer: { flex: 1, position: 'relative' },
