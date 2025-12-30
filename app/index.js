@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, FlatList, Alert, Switch, Platform, TextInput, Vibration, AppState, LogBox } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, FlatList, Alert, Switch, Platform, TextInput, Vibration, AppState, LogBox, Keyboard, KeyboardAvoidingView, Dimensions, ScrollView } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import MapView, { Circle, Marker } from 'react-native-maps';
 import * as Location from 'expo-location';
@@ -177,6 +177,8 @@ export default function App() {
   const [tempName, setTempName] = useState("");
   const [tempRadius, setTempRadius] = useState(500);
   const [selectedCoord, setSelectedCoord] = useState(null);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   
   const mapRef = useRef(null);
   const responseListener = useRef();
@@ -258,6 +260,29 @@ export default function App() {
       return () => clearTimeout(timer);
     }
   }, [location]);
+
+  // Keyboard event listeners
+  useEffect(() => {
+    const keyboardWillShowListener = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      (e) => {
+        setKeyboardHeight(e.endCoordinates.height);
+        setIsKeyboardVisible(true);
+      }
+    );
+    const keyboardWillHideListener = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        setKeyboardHeight(0);
+        setIsKeyboardVisible(false);
+      }
+    );
+
+    return () => {
+      keyboardWillShowListener.remove();
+      keyboardWillHideListener.remove();
+    };
+  }, []);
 
   // --- ALARM ACTIONS ---
   const stopAlarmAndRefresh = async (id) => {
@@ -478,6 +503,18 @@ export default function App() {
     );
   };
 
+  // Fixed panel height - same for both edit and list views
+  const PANEL_HEIGHT = 320; // Fixed height for the panel
+  
+  // Calculate bottom offset for panel - when keyboard is visible, position above keyboard
+  const panelBottomOffset = isKeyboardVisible && isEditing 
+    ? keyboardHeight 
+    : 0; // Stick to bottom when keyboard is hidden
+  
+  // Map container padding - no padding when keyboard is visible (panel is above keyboard)
+  // Full padding when keyboard is hidden (panel is at bottom)
+  const mapPaddingBottom = isKeyboardVisible && isEditing ? 0 : PANEL_HEIGHT;
+
   return (
     <View style={styles.container}>
       <StatusBar style="dark" />
@@ -498,7 +535,7 @@ export default function App() {
         </View>
       </View>
 
-      <View style={styles.mapContainer}>
+      <View style={[styles.mapContainer, { paddingBottom: mapPaddingBottom }]}>
         <MapView
             ref={mapRef}
             style={styles.map}
@@ -539,11 +576,29 @@ export default function App() {
         </MapView>
       </View>
 
-      <View style={styles.panel}>
+      <View style={[
+        styles.panel,
+        { 
+          height: PANEL_HEIGHT,
+          bottom: panelBottomOffset 
+        }
+      ]}>
         {isEditing ? (
-            <View style={styles.editContainer}>
+            <ScrollView 
+              style={styles.editScrollView}
+              contentContainerStyle={styles.editContainer}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={true}
+            >
                 <Text style={styles.panelTitle}>{editingId ? "Edit Alarm" : "New Alarm"}</Text>
-                <TextInput style={styles.input} value={tempName} onChangeText={setTempName} placeholder="Alarm Name" />
+                <TextInput 
+                  style={styles.input} 
+                  value={tempName} 
+                  onChangeText={setTempName} 
+                  placeholder="Alarm Name"
+                  returnKeyType="done"
+                  blurOnSubmit={true}
+                />
                 <View style={styles.sliderContainer}>
                     <Text style={styles.label}>Radius: {tempRadius.toFixed(0)} m</Text>
                     <Slider style={{width: '100%', height: 40}} minimumValue={50} maximumValue={5000} step={50} value={tempRadius} onValueChange={setTempRadius} minimumTrackTintColor="#FF9500" thumbTintColor="#FF9500" />
@@ -552,7 +607,7 @@ export default function App() {
                     <TouchableOpacity onPress={cancelEdit} style={[styles.actionBtn, {backgroundColor:'#ccc'}]}><Text style={styles.btnText}>Cancel</Text></TouchableOpacity>
                     <TouchableOpacity onPress={saveAlarm} style={[styles.actionBtn, {backgroundColor:'#007AFF'}]}><Text style={[styles.btnText, {color:'white'}]}>Save Alarm</Text></TouchableOpacity>
                 </View>
-            </View>
+            </ScrollView>
         ) : (
             <>
                 <View style={styles.listHeader}>
@@ -563,7 +618,13 @@ export default function App() {
                         <Text style={{color:'#888', fontSize:12}}>Tap map to create</Text>
                     )}
                 </View>
-                <FlatList data={alarms} keyExtractor={(item) => item.id} renderItem={renderItem} contentContainerStyle={{paddingBottom: 20}} />
+                <FlatList 
+                  data={alarms} 
+                  keyExtractor={(item) => item.id} 
+                  renderItem={renderItem} 
+                  contentContainerStyle={{paddingBottom: 20}}
+                  keyboardShouldPersistTaps="handled"
+                />
             </>
         )}
       </View>
@@ -578,10 +639,23 @@ const styles = StyleSheet.create({
   statsHeader: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 15, paddingTop: 40, paddingBottom: 3, backgroundColor: 'white', borderBottomWidth:1, borderBottomColor:'#ddd', zIndex: 10 },
   statsLabel: { fontSize: 10, color: '#666', fontWeight:'bold' },
   statsValue: { fontSize: 14, fontWeight: 'bold' },
-  mapContainer: { flex: 1, position: 'relative' },
+  mapContainer: { flex: 1, position: 'relative', minHeight: 200 },
   map: { width: '100%', height: '100%' },
   fab: { position: 'absolute', bottom: 20, right: 20, backgroundColor: 'white', width: 50, height: 50, borderRadius: 25, justifyContent: 'center', alignItems: 'center', elevation: 5, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 3, shadowOffset: {width:0, height:2} },
-  panel: { height: '40%', backgroundColor: 'white', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, shadowColor:'#000', shadowOpacity:0.1, shadowRadius:10, elevation:10 },
+  panel: { 
+    position: 'absolute', 
+    left: 0, 
+    right: 0, 
+    backgroundColor: 'white', 
+    borderTopLeftRadius: 20, 
+    borderTopRightRadius: 20, 
+    padding: 20, 
+    shadowColor:'#000', 
+    shadowOpacity:0.1, 
+    shadowRadius:10, 
+    elevation:10,
+    zIndex: 15
+  },
   panelTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 10 },
   listHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   createBtn: { backgroundColor: '#007AFF', paddingHorizontal: 15, paddingVertical: 8, borderRadius: 20 },
@@ -594,11 +668,12 @@ const styles = StyleSheet.create({
   iconBtn: { padding: 5 },
   liveContainer: { marginTop: 8, backgroundColor: '#E3F2FD', padding: 4, borderRadius: 4, alignSelf: 'flex-start' },
   liveText: { color: '#007AFF', fontSize: 11, fontWeight: 'bold' },
-  editContainer: { flex: 1, justifyContent: 'space-between' },
+  editScrollView: { flex: 1 },
+  editContainer: { flexGrow: 1, justifyContent: 'flex-start', paddingBottom: 10 },
   input: { borderWidth: 1, borderColor: '#ddd', borderRadius: 8, padding: 12, fontSize: 16, backgroundColor: '#F9F9F9', marginBottom: 15 },
   sliderContainer: { marginBottom: 15 },
   label: { fontSize: 14, fontWeight: 'bold', marginBottom: 5, color:'#555' },
-  buttonRow: { flexDirection: 'row', gap: 10 },
+  buttonRow: { flexDirection: 'row', gap: 10, marginTop: 10 },
   actionBtn: { flex: 1, padding: 15, borderRadius: 10, alignItems: 'center' },
   btnText: { fontWeight: 'bold' }
 });
