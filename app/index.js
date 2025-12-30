@@ -179,11 +179,12 @@ export default function App() {
   const [selectedCoord, setSelectedCoord] = useState(null);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const [mapRegion, setMapRegion] = useState(null);
+  const [hasSetInitialRegion, setHasSetInitialRegion] = useState(false);
   
   const mapRef = useRef(null);
   const responseListener = useRef();
   const locationWatcher = useRef(null);
-  const hasCenteredOnLoad = useRef(false);
 
   // --- INIT ---
   useEffect(() => {
@@ -241,25 +242,6 @@ export default function App() {
       clearInterval(notificationRefreshInterval);
     };
   }, []);
-
-  // Center map to current location when location becomes available and map is ready
-  useEffect(() => {
-    if (location && mapRef.current && !hasCenteredOnLoad.current) {
-      // Small delay to ensure map is fully rendered
-      const timer = setTimeout(() => {
-        if (mapRef.current) {
-          hasCenteredOnLoad.current = true;
-          mapRef.current.animateToRegion({
-            latitude: location.coords.latitude,
-            longitude: location.coords.longitude,
-            latitudeDelta: 0.05,
-            longitudeDelta: 0.05,
-          }, 500);
-        }
-      }, 300);
-      return () => clearTimeout(timer);
-    }
-  }, [location]);
 
   // Keyboard event listeners
   useEffect(() => {
@@ -356,7 +338,17 @@ export default function App() {
         { accuracy: Location.Accuracy.High, timeInterval: 2000, distanceInterval: 5 },
         async (loc) => {
           setLocation(loc);
-          setGpsEnabled(true); 
+          setGpsEnabled(true);
+          // Set initial map region only once when location is first available
+          if (!hasSetInitialRegion && loc) {
+            setMapRegion({
+              latitude: loc.coords.latitude,
+              longitude: loc.coords.longitude,
+              latitudeDelta: 0.05,
+              longitudeDelta: 0.05,
+            });
+            setHasSetInitialRegion(true);
+          }
           const changed = await checkAlarms(loc.coords);
           if (changed) loadAlarms();
         }
@@ -546,23 +538,16 @@ export default function App() {
             style={styles.map}
             showsUserLocation={true}
             showsMyLocationButton={true}
-            onMapReady={() => {
-              // When map is fully loaded and we have location, center to current location
-              if (location && !hasCenteredOnLoad.current && mapRef.current) {
-                hasCenteredOnLoad.current = true;
-                mapRef.current.animateToRegion({
-                  latitude: location.coords.latitude,
-                  longitude: location.coords.longitude,
-                  latitudeDelta: 0.05,
-                  longitudeDelta: 0.05,
-                }, 500); // 500ms animation
-              }
-            }}
             onPress={(e) => !isEditing && setSelectedCoord(e.nativeEvent.coordinate)}
-            initialRegion={{
-            latitude: location ? location.coords.latitude : 28.6139,
-            longitude: location ? location.coords.longitude : 77.2090,
-            latitudeDelta: 0.05, longitudeDelta: 0.05,
+            region={mapRegion || {
+              latitude: location ? location.coords.latitude : 28.6139,
+              longitude: location ? location.coords.longitude : 77.2090,
+              latitudeDelta: 0.05,
+              longitudeDelta: 0.05,
+            }}
+            onRegionChangeComplete={(region) => {
+              // Update map region when user manually moves/zooms the map
+              setMapRegion(region);
             }}
         >
             {!isEditing && alarms.map((alarm) => (
