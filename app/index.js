@@ -418,11 +418,29 @@ export default function App() {
   };
 
   const toggleAlarm = async (id) => {
+    // Check if the alarm being toggled is currently ringing
+    const alarmToToggle = alarms.find(a => a.id === id);
+    const wasRinging = alarmToToggle && alarmToToggle.triggered && alarmToToggle.active;
+    
     const updated = alarms.map(a => 
       a.id === id ? { ...a, active: !a.active, triggered: false } : a 
     );
     setAlarms(updated);
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    
+    // If the alarm was ringing and is now being turned off
+    if (wasRinging && !updated.find(a => a.id === id)?.active) {
+      // Dismiss the notification for this specific alarm
+      await Notifications.dismissNotificationAsync(`alarm-${id}`);
+      
+      // Check if there are any other alarms still ringing
+      const otherRingingAlarms = updated.filter(a => a.active && a.triggered);
+      
+      // If no other alarms are ringing, stop the sound
+      if (otherRingingAlarms.length === 0) {
+        stopAlarmSound();
+      }
+    }
     
     if (location) {
         const changed = await checkAlarms(location.coords);
