@@ -183,6 +183,7 @@ export default function App() {
   const [mapRegion, setMapRegion] = useState(null);
   const [hasSetInitialRegion, setHasSetInitialRegion] = useState(false);
   const [selectedAlarmId, setSelectedAlarmId] = useState(null);
+  const [sortByDistance, setSortByDistance] = useState(false);
   
   const mapRef = useRef(null);
   const flatListRef = useRef(null);
@@ -538,6 +539,20 @@ export default function App() {
     }
   };
 
+  // Get sorted alarms based on distance toggle
+  const getSortedAlarms = () => {
+    if (!sortByDistance || !location) {
+      return alarms;
+    }
+    
+    // Sort by distance from current position (least to most)
+    return [...alarms].sort((a, b) => {
+      const distA = getDistance(location.coords.latitude, location.coords.longitude, a.latitude, a.longitude);
+      const distB = getDistance(location.coords.latitude, location.coords.longitude, b.latitude, b.longitude);
+      return distA - distB;
+    });
+  };
+
   const renderItem = ({ item }) => {
     let distToEdge = 0;
     if (location) {
@@ -575,9 +590,10 @@ export default function App() {
     setSelectedAlarmId(alarm.id);
     setSelectedCoord(null); // Clear new pin selection
     
-    // Scroll to the alarm in the list
+    // Scroll to the alarm in the list (use sorted list if sorting is enabled)
     if (flatListRef.current) {
-      const alarmIndex = alarms.findIndex(a => a.id === alarm.id);
+      const sortedAlarms = getSortedAlarms();
+      const alarmIndex = sortedAlarms.findIndex(a => a.id === alarm.id);
       if (alarmIndex !== -1) {
         setTimeout(() => {
           flatListRef.current?.scrollToIndex({ 
@@ -591,7 +607,7 @@ export default function App() {
   };
 
   // Fixed panel height - same for both edit and list views
-  const PANEL_HEIGHT = 320; // Fixed height for the panel
+  const PANEL_HEIGHT = "50%"; // Fixed height for the panel
   
   // Calculate map container flex - shrink when keyboard is visible to make room for panel above keyboard
   const mapContainerFlex = isKeyboardVisible && isEditing 
@@ -710,15 +726,26 @@ export default function App() {
             <>
                 <View style={styles.listHeader}>
                     <Text style={styles.panelTitle}>Your Alarms</Text>
-                    {selectedCoord ? (
-                        <TouchableOpacity style={styles.createBtn} onPress={startCreating}><Text style={styles.createBtnText}>+ Set Alarm</Text></TouchableOpacity>
-                    ) : (
-                        <Text style={{color:'#888', fontSize:12}}>Tap map to create</Text>
-                    )}
+                    <View style={{alignItems: 'flex-end'}}>
+                        {selectedCoord ? (
+                            <TouchableOpacity style={styles.createBtn} onPress={startCreating}><Text style={styles.createBtnText}>+ Set Alarm</Text></TouchableOpacity>
+                        ) : (
+                            <Text style={{color:'#888', fontSize:12}}>Tap map to create</Text>
+                        )}
+                        <View style={styles.sortToggleContainer}>
+                            <Text style={styles.sortToggleLabel}>Sort by distance</Text>
+                            <Switch 
+                                value={sortByDistance} 
+                                onValueChange={setSortByDistance}
+                                trackColor={{ false: '#767577', true: '#007AFF' }}
+                                thumbColor={sortByDistance ? '#fff' : '#f4f3f4'}
+                            />
+                        </View>
+                    </View>
                 </View>
                 <FlatList 
                   ref={flatListRef}
-                  data={alarms} 
+                  data={getSortedAlarms()} 
                   keyExtractor={(item) => item.id} 
                   renderItem={renderItem} 
                   contentContainerStyle={{paddingBottom: 20}}
@@ -777,6 +804,8 @@ const styles = StyleSheet.create({
   },
   panelTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 10 },
   listHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  sortToggleContainer: { flexDirection: 'row', alignItems: 'center', marginTop: 8, gap: 8 },
+  sortToggleLabel: { fontSize: 12, color: '#666', fontWeight: '500' },
   createBtn: { backgroundColor: '#007AFF', paddingHorizontal: 15, paddingVertical: 8, borderRadius: 20 },
   createBtnText: { color: 'white', fontWeight: 'bold' },
   card: { backgroundColor: '#fff', borderWidth:1, borderColor:'#eee', padding: 15, borderRadius: 12, marginBottom: 10, flexDirection: 'row', justifyContent:'space-between' },
