@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, FlatList, Alert, Switch, Platform, TextInput, Vibration, AppState, LogBox, Keyboard, KeyboardAvoidingView, Dimensions, ScrollView } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import MapView, { Circle, Marker } from 'react-native-maps';
+import MapView, { Circle, Marker, Callout } from 'react-native-maps';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import * as Notifications from 'expo-notifications';
@@ -182,8 +182,10 @@ export default function App() {
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const [mapRegion, setMapRegion] = useState(null);
   const [hasSetInitialRegion, setHasSetInitialRegion] = useState(false);
+  const [selectedAlarmId, setSelectedAlarmId] = useState(null);
   
   const mapRef = useRef(null);
+  const flatListRef = useRef(null);
   const responseListener = useRef();
   const locationWatcher = useRef(null);
 
@@ -447,6 +449,7 @@ export default function App() {
     setTempRadius(alarm.radius);
     const coord = { latitude: alarm.latitude, longitude: alarm.longitude };
     setSelectedCoord(coord);
+    setSelectedAlarmId(null); // Clear selection when editing
     // Get location name for the alarm location
     const locationName = await getLocationName(coord.latitude, coord.longitude);
     setSelectedLocationName(locationName);
@@ -495,6 +498,7 @@ export default function App() {
     setIsEditing(false);
     setSelectedCoord(null);
     setSelectedLocationName(null);
+    setSelectedAlarmId(null);
   };
 
   const deleteAlarm = async (id) => {
@@ -541,9 +545,14 @@ export default function App() {
       distToEdge = Math.max(0, distToCenter - item.radius);
     }
     const distDisplay = distToEdge > 1000 ? `${(distToEdge / 1000).toFixed(1)} km` : `${distToEdge.toFixed(0)} m`;
+    const isSelected = selectedAlarmId === item.id;
 
     return (
-      <View style={[styles.card, (!item.active || item.triggered) && styles.cardInactive]}>
+      <View style={[
+        styles.card, 
+        (!item.active || item.triggered) && styles.cardInactive,
+        isSelected && styles.cardSelected
+      ]}>
         <View style={{flex: 1}}>
           <Text style={styles.cardTitle}>{item.name}</Text>
           {item.triggered && <Text style={{color:'red', fontWeight:'bold', marginTop: 4}}>RINGING!</Text>}
@@ -559,6 +568,26 @@ export default function App() {
         </View>
       </View>
     );
+  };
+
+  // Handle alarm marker click
+  const handleAlarmMarkerPress = (alarm) => {
+    setSelectedAlarmId(alarm.id);
+    setSelectedCoord(null); // Clear new pin selection
+    
+    // Scroll to the alarm in the list
+    if (flatListRef.current) {
+      const alarmIndex = alarms.findIndex(a => a.id === alarm.id);
+      if (alarmIndex !== -1) {
+        setTimeout(() => {
+          flatListRef.current?.scrollToIndex({ 
+            index: alarmIndex, 
+            animated: true,
+            viewPosition: 0.5 // Center the item
+          });
+        }, 100);
+      }
+    }
   };
 
   // Fixed panel height - same for both edit and list views
@@ -597,6 +626,8 @@ export default function App() {
             showsMyLocationButton={true}
             onPress={async (e) => {
               if (!isEditing) {
+                // Clear selected alarm when tapping on map
+                setSelectedAlarmId(null);
                 const coord = e.nativeEvent.coordinate;
                 setSelectedCoord(coord);
                 // Get location name when pin is dropped
@@ -617,7 +648,20 @@ export default function App() {
         >
             {alarms.map((alarm) => (
             <React.Fragment key={alarm.id}>
-                <Marker coordinate={alarm} pinColor={alarm.active ? "green" : "gray"} />
+                <Marker 
+                  coordinate={alarm} 
+                  pinColor={alarm.active ? "green" : "gray"}
+                  onPress={() => handleAlarmMarkerPress(alarm)}
+                >
+                  <Callout>
+                    <View style={styles.calloutContainer}>
+                      <Text style={styles.calloutTitle}>{alarm.name}</Text>
+                      <Text style={styles.calloutSubtext}>
+                        Radius: {alarm.radius.toFixed(0)}m • {alarm.active ? "Active" : "Off"}
+                      </Text>
+                    </View>
+                  </Callout>
+                </Marker>
                 <Circle center={alarm} radius={alarm.radius} fillColor={alarm.active ? "rgba(0, 255, 0, 0.1)" : "rgba(100,100,100,0.1)"} strokeColor={alarm.active ? "green" : "gray"} />
             </React.Fragment>
             ))}
@@ -673,11 +717,19 @@ export default function App() {
                     )}
                 </View>
                 <FlatList 
+                  ref={flatListRef}
                   data={alarms} 
                   keyExtractor={(item) => item.id} 
                   renderItem={renderItem} 
                   contentContainerStyle={{paddingBottom: 20}}
                   keyboardShouldPersistTaps="handled"
+                  onScrollToIndexFailed={(info) => {
+                    // Handle scroll failure gracefully
+                    const wait = new Promise(resolve => setTimeout(resolve, 500));
+                    wait.then(() => {
+                      flatListRef.current?.scrollToIndex({ index: info.index, animated: true });
+                    });
+                  }}
                 />
             </>
         )}
@@ -729,6 +781,7 @@ const styles = StyleSheet.create({
   createBtnText: { color: 'white', fontWeight: 'bold' },
   card: { backgroundColor: '#fff', borderWidth:1, borderColor:'#eee', padding: 15, borderRadius: 12, marginBottom: 10, flexDirection: 'row', justifyContent:'space-between' },
   cardInactive: { opacity: 0.6, backgroundColor: '#f9f9f9' },
+  cardSelected: { borderWidth: 2, borderColor: '#007AFF', backgroundColor: '#E3F2FD' },
   cardTitle: { fontSize: 16, fontWeight: '600' },
   cardSub: { fontSize: 12, color: '#888', marginTop: 2 },
   cardActions: { alignItems: 'flex-end', justifyContent: 'space-between' },
@@ -742,5 +795,8 @@ const styles = StyleSheet.create({
   label: { fontSize: 14, fontWeight: 'bold', marginBottom: 5, color:'#555' },
   buttonRow: { flexDirection: 'row', gap: 10, marginTop: 0, marginBottom: 0 },
   actionBtn: { flex: 1, paddingVertical: 10, paddingHorizontal: 15, borderRadius: 10, alignItems: 'center' },
-  btnText: { fontWeight: 'bold' }
+  btnText: { fontWeight: 'bold' },
+  calloutContainer: { padding: 5, minWidth: 150 },
+  calloutTitle: { fontSize: 16, fontWeight: 'bold', marginBottom: 4 },
+  calloutSubtext: { fontSize: 12, color: '#666' }
 });
