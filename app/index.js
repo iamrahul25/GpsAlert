@@ -344,6 +344,7 @@ export default function App() {
           setLocation(loc);
           setGpsEnabled(true);
           // Set initial map region only once when location is first available
+          // This sets the initial view, but won't cause re-renders when location updates
           if (!hasSetInitialRegion && loc) {
             setMapRegion({
               latitude: loc.coords.latitude,
@@ -353,6 +354,8 @@ export default function App() {
             });
             setHasSetInitialRegion(true);
           }
+          // Don't update map region automatically - let user control the map
+          // The built-in My Location button will handle centering when clicked
           const changed = await checkAlarms(loc.coords);
           if (changed) loadAlarms();
         }
@@ -653,7 +656,7 @@ export default function App() {
                 setSelectedLocationName(locationName);
               }
             }}
-            region={mapRegion || {
+            initialRegion={mapRegion || {
               latitude: location ? location.coords.latitude : 28.6139,
               longitude: location ? location.coords.longitude : 77.2090,
               latitudeDelta: 0.05,
@@ -661,6 +664,7 @@ export default function App() {
             }}
             onRegionChangeComplete={(region) => {
               // Update map region when user manually moves/zooms the map
+              // This prevents the map from resetting when location updates
               setMapRegion(region);
             }}
         >
