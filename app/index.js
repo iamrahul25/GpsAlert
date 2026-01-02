@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, FlatList, Alert, Switch, Platform, TextInput, Vibration, AppState, LogBox, Keyboard, KeyboardAvoidingView, Dimensions, ScrollView } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, FlatList, Alert, Switch, Platform, TextInput, Vibration, AppState, LogBox, Keyboard, KeyboardAvoidingView, Dimensions, ScrollView, Modal } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import MapView, { Circle, Marker, Callout } from 'react-native-maps';
 import * as Location from 'expo-location';
@@ -19,6 +19,7 @@ LogBox.ignoreLogs([
 // --- CONSTANTS ---
 const LOCATION_TASK_NAME = 'background-location-task';
 const STORAGE_KEY = '@gps_alarms';
+const BACKGROUND_RUNNING_KEY = '@background_running';
 // CHANGED: New ID to force Android to reset sound settings for this channel
 const CHANNEL_ID = 'alarm-channel-v2'; 
 
@@ -184,6 +185,8 @@ export default function App() {
   const [hasSetInitialRegion, setHasSetInitialRegion] = useState(false);
   const [selectedAlarmId, setSelectedAlarmId] = useState(null);
   const [sortByDistance, setSortByDistance] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [backgroundRunning, setBackgroundRunning] = useState(true);
   
   const mapRef = useRef(null);
   const flatListRef = useRef(null);
@@ -192,58 +195,66 @@ export default function App() {
 
   // --- INIT ---
   useEffect(() => {
-    // Enable Background Audio Mode
-    Audio.setAudioModeAsync({
-        staysActiveInBackground: true,
-        shouldDuckAndroid: true,
-        playThroughEarpieceAndroid: false,
-    });
+    let gpsInterval;
+    let notificationRefreshInterval;
 
-    loadAlarms();
-    requestPermissions();
-    setupNotifications();
-    const gpsInterval = startGpsStatusCheck();
+    const initializeApp = async () => {
+      // Enable Background Audio Mode
+      Audio.setAudioModeAsync({
+          staysActiveInBackground: true,
+          shouldDuckAndroid: true,
+          playThroughEarpieceAndroid: false,
+      });
 
-    // NOTIFICATION LISTENER
-    responseListener.current = Notifications.addNotificationResponseReceivedListener(response => {
-      const actionId = response.actionIdentifier;
-      const alarmId = response.notification.request.content.data.alarmId;
-      
-      // Stop the ringing immediately upon interaction
-      stopAlarmSound(); 
+      await loadBackgroundRunningPreference();
+      loadAlarms();
+      await requestPermissions();
+      setupNotifications();
+      gpsInterval = startGpsStatusCheck();
 
-      if (actionId === 'stop') {
-        stopAlarmAndRefresh(alarmId);
-      }
-      // If tapped notification body, sound is already stopped above
-    });
-
-    // Re-show notifications for active triggered alarms (prevents dismissal)
-    // This makes notifications effectively non-dismissible until "Stop Alarm" is clicked
-    // Using silent=true to prevent notification sound from playing on refresh
-    const notificationRefreshInterval = setInterval(async () => {
-      try {
-        const json = await AsyncStorage.getItem(STORAGE_KEY);
-        if (!json) return;
-        const savedAlarms = JSON.parse(json);
-        const triggeredAlarms = savedAlarms.filter(a => a.active && a.triggered);
+      // NOTIFICATION LISTENER
+      responseListener.current = Notifications.addNotificationResponseReceivedListener(response => {
+        const actionId = response.actionIdentifier;
+        const alarmId = response.notification.request.content.data.alarmId;
         
-        // Re-show notification silently for each active triggered alarm
-        // Using same identifier will update existing notification or recreate if dismissed
-        // silent=true prevents sound/vibration from playing on refresh
-        for (const alarm of triggeredAlarms) {
-          await showAlarmNotification(alarm, true); // true = silent refresh
+        // Stop the ringing immediately upon interaction
+        stopAlarmSound(); 
+
+        if (actionId === 'stop') {
+          stopAlarmAndRefresh(alarmId);
         }
-      } catch (e) {
-        // Silently handle errors
-      }
-    }, 5000); // Check every 5 seconds (reduced frequency to minimize interruptions)
+        // If tapped notification body, sound is already stopped above
+      });
+
+      // Re-show notifications for active triggered alarms (prevents dismissal)
+      // This makes notifications effectively non-dismissible until "Stop Alarm" is clicked
+      // Using silent=true to prevent notification sound from playing on refresh
+      notificationRefreshInterval = setInterval(async () => {
+        try {
+          const json = await AsyncStorage.getItem(STORAGE_KEY);
+          if (!json) return;
+          const savedAlarms = JSON.parse(json);
+          const triggeredAlarms = savedAlarms.filter(a => a.active && a.triggered);
+          
+          // Re-show notification silently for each active triggered alarm
+          // Using same identifier will update existing notification or recreate if dismissed
+          // silent=true prevents sound/vibration from playing on refresh
+          for (const alarm of triggeredAlarms) {
+            await showAlarmNotification(alarm, true); // true = silent refresh
+          }
+        } catch (e) {
+          // Silently handle errors
+        }
+      }, 5000); // Check every 5 seconds (reduced frequency to minimize interruptions)
+    };
+
+    initializeApp();
 
     return () => {
       if (responseListener.current) responseListener.current.remove();
       if (locationWatcher.current) locationWatcher.current.remove();
-      clearInterval(gpsInterval);
-      clearInterval(notificationRefreshInterval);
+      if (gpsInterval) clearInterval(gpsInterval);
+      if (notificationRefreshInterval) clearInterval(notificationRefreshInterval);
     };
   }, []);
 
@@ -270,6 +281,15 @@ export default function App() {
     };
   }, []);
 
+  // Update background service when backgroundRunning preference or alarms change
+  useEffect(() => {
+    // Delay to ensure state is updated
+    const timer = setTimeout(() => {
+      updateBackgroundService();
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [backgroundRunning]);
+
   // --- ALARM ACTIONS ---
   const stopAlarmAndRefresh = async (id) => {
     try {
@@ -290,6 +310,36 @@ export default function App() {
   };
 
   // --- BACKGROUND & GPS MANAGEMENT ---
+  const updateBackgroundService = async () => {
+    try {
+      // Check if there are any active alarms
+      const jsonValue = await AsyncStorage.getItem(STORAGE_KEY);
+      const savedAlarms = jsonValue != null ? JSON.parse(jsonValue) : [];
+      const hasActiveAlarms = savedAlarms.some(a => a.active);
+      
+      // Should run if: background running is enabled AND (there are active alarms OR GPS is enabled)
+      const shouldRun = backgroundRunning && (hasActiveAlarms || gpsEnabled);
+      
+      const hasStarted = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
+      if (shouldRun && !hasStarted) {
+        await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
+          accuracy: Location.Accuracy.BestForNavigation,
+          timeInterval: 5000,
+          distanceInterval: 5,
+          showsBackgroundLocationIndicator: true,
+          foregroundService: { 
+            notificationTitle: "GPS Alarm Active", 
+            notificationBody: "Monitoring location in background..." 
+          }
+        });
+      } else if (!shouldRun && hasStarted) {
+        await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
+      }
+    } catch (e) {
+      console.log("Error updating background service:", e);
+    }
+  };
+
   const manageBackgroundService = async (shouldBeRunning) => {
     try {
       const hasStarted = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
@@ -312,7 +362,6 @@ export default function App() {
       try {
         const enabled = await Location.hasServicesEnabledAsync();
         if (!enabled) {
-          await manageBackgroundService(false);
           if (!hasShownGpsWarning.current) {
              Notifications.scheduleNotificationAsync({
               content: { title: "⚠️ GPS Disabled", body: "Alarms paused.", priority: Notifications.AndroidNotificationPriority.HIGH },
@@ -321,10 +370,11 @@ export default function App() {
             hasShownGpsWarning.current = true;
           }
         } else {
-          await manageBackgroundService(true);
           hasShownGpsWarning.current = false;
         }
         setGpsEnabled(enabled);
+        // Update background service based on current state
+        await updateBackgroundService();
       } catch (e) { }
     }, 3000);
   };
@@ -336,7 +386,8 @@ export default function App() {
       const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
       const { status: notifStatus } = await Notifications.requestPermissionsAsync();
       
-      await manageBackgroundService(true);
+      // Update background service after permissions are granted
+      await updateBackgroundService();
 
       locationWatcher.current = await Location.watchPositionAsync(
         { accuracy: Location.Accuracy.High, timeInterval: 2000, distanceInterval: 5 },
@@ -384,6 +435,37 @@ export default function App() {
       const json = await AsyncStorage.getItem(STORAGE_KEY);
       if (json) setAlarms(JSON.parse(json));
     } catch (e) {}
+  };
+
+  const loadBackgroundRunningPreference = async () => {
+    try {
+      const value = await AsyncStorage.getItem(BACKGROUND_RUNNING_KEY);
+      if (value !== null) {
+        const enabled = JSON.parse(value);
+        setBackgroundRunning(enabled);
+        return enabled;
+      } else {
+        // Default to true if not set
+        setBackgroundRunning(true);
+        await AsyncStorage.setItem(BACKGROUND_RUNNING_KEY, JSON.stringify(true));
+        return true;
+      }
+    } catch (e) {
+      // Default to true if error
+      setBackgroundRunning(true);
+      return true;
+    }
+  };
+
+  const saveBackgroundRunningPreference = async (enabled) => {
+    try {
+      await AsyncStorage.setItem(BACKGROUND_RUNNING_KEY, JSON.stringify(enabled));
+      setBackgroundRunning(enabled);
+      // Update background service based on new preference
+      await updateBackgroundService();
+    } catch (e) {
+      console.log("Error saving background running preference:", e);
+    }
   };
 
   // --- REVERSE GEOCODING: Get location name from coordinates ---
@@ -488,6 +570,9 @@ export default function App() {
     setSelectedCoord(null);
     setSelectedLocationName(null);
 
+    // Update background service when alarms change
+    await updateBackgroundService();
+
     if (location) {
       const changed = await checkAlarms(location.coords);
       if (changed) loadAlarms();
@@ -509,6 +594,8 @@ export default function App() {
     const updated = alarms.filter(a => a.id !== id);
     setAlarms(updated);
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    // Update background service when alarms change
+    await updateBackgroundService();
   };
 
   const toggleAlarm = async (id) => {
@@ -521,6 +608,9 @@ export default function App() {
     );
     setAlarms(updated);
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    
+    // Update background service when alarm state changes
+    await updateBackgroundService();
     
     // If the alarm was ringing and is now being turned off
     if (wasRinging && !updated.find(a => a.id === id)?.active) {
@@ -631,11 +721,19 @@ export default function App() {
             <Text style={styles.statsLabel}>LAT: {location?.coords.latitude.toFixed(7) || "..."}</Text>
             <Text style={styles.statsLabel}>LNG: {location?.coords.longitude.toFixed(7) || "..."}</Text>
         </View>
-        <View>
-            <Text style={styles.statsLabel}>GPS Accuracy</Text>
-            <Text style={[styles.statsValue, {color: (location?.coords.accuracy || 100) < 20 ? 'green' : 'orange'}]}>
-                {location?.coords.accuracy?.toFixed(1) || "?"} m
-            </Text>
+        <View style={{flexDirection: 'row', alignItems: 'center', gap: 15}}>
+          <View>
+              <Text style={styles.statsLabel}>GPS Accuracy</Text>
+              <Text style={[styles.statsValue, {color: (location?.coords.accuracy || 100) < 20 ? 'green' : 'orange'}]}>
+                  {location?.coords.accuracy?.toFixed(1) || "?"} m
+              </Text>
+          </View>
+          <TouchableOpacity 
+            onPress={() => setShowSettings(true)} 
+            style={styles.settingsButton}
+          >
+            <Text style={styles.settingsButtonText}>⚙️</Text>
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -767,6 +865,59 @@ export default function App() {
             </>
         )}
       </View>
+
+      {/* Settings Modal */}
+      <Modal
+        visible={showSettings}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowSettings(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Settings</Text>
+              <TouchableOpacity 
+                onPress={() => setShowSettings(false)}
+                style={styles.modalCloseButton}
+              >
+                <Text style={styles.modalCloseText}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            
+            <View style={styles.settingItem}>
+              <View style={styles.settingInfo}>
+                <Text style={styles.settingTitle}>Run in Background</Text>
+                <Text style={styles.settingDescription}>
+                  Keep the app running in the background even when closed. This allows alarms to work when the app is not open.
+                </Text>
+              </View>
+              <Switch
+                value={backgroundRunning}
+                onValueChange={saveBackgroundRunningPreference}
+                trackColor={{ false: '#767577', true: '#007AFF' }}
+                thumbColor={backgroundRunning ? '#fff' : '#f4f3f4'}
+              />
+            </View>
+
+            {backgroundRunning && (
+              <View style={styles.infoBox}>
+                <Text style={styles.infoText}>
+                  ℹ️ Background mode is enabled. The app will continue monitoring your location and trigger alarms even when closed.
+                </Text>
+              </View>
+            )}
+
+            {!backgroundRunning && (
+              <View style={styles.warningBox}>
+                <Text style={styles.warningText}>
+                  ⚠️ Background mode is disabled. Alarms will only work when the app is open.
+                </Text>
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
     </>
   );
 
@@ -833,5 +984,89 @@ const styles = StyleSheet.create({
   btnText: { fontWeight: 'bold' },
   calloutContainer: { padding: 5, minWidth: 150 },
   calloutTitle: { fontSize: 16, fontWeight: 'bold', marginBottom: 4 },
-  calloutSubtext: { fontSize: 12, color: '#666' }
+  calloutSubtext: { fontSize: 12, color: '#666' },
+  settingsButton: { 
+    padding: 8, 
+    borderRadius: 20, 
+    backgroundColor: '#f0f0f0',
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center'
+  },
+  settingsButtonText: { fontSize: 20 },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: 'white',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    paddingBottom: 40,
+    maxHeight: '80%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  modalTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+  modalCloseButton: {
+    padding: 5,
+  },
+  modalCloseText: {
+    fontSize: 24,
+    color: '#666',
+  },
+  settingItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+  },
+  settingInfo: {
+    flex: 1,
+    marginRight: 15,
+  },
+  settingTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 5,
+  },
+  settingDescription: {
+    fontSize: 13,
+    color: '#666',
+    lineHeight: 18,
+  },
+  infoBox: {
+    backgroundColor: '#E3F2FD',
+    padding: 15,
+    borderRadius: 10,
+    marginTop: 20,
+  },
+  infoText: {
+    fontSize: 13,
+    color: '#1976D2',
+    lineHeight: 18,
+  },
+  warningBox: {
+    backgroundColor: '#FFF3E0',
+    padding: 15,
+    borderRadius: 10,
+    marginTop: 20,
+  },
+  warningText: {
+    fontSize: 13,
+    color: '#F57C00',
+    lineHeight: 18,
+  },
 });
